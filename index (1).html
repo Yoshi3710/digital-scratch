@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>デジタルスクラッチボード</title>
+<style>
+  :root{
+    --panel:#ffffff;
+    --bg:#eceff3;
+    --ink:#111827;
+    --accent:#2563eb;
+    --border:#d6dbe3;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif;
+    background:var(--bg);
+    color:var(--ink);
+    height:100vh;
+    overflow:hidden;
+  }
+  .app{
+    height:100vh;
+    display:grid;
+    grid-template-rows:auto 1fr;
+  }
+  header{
+    background:var(--panel);
+    border-bottom:1px solid var(--border);
+    padding:10px 12px;
+    display:flex;
+    align-items:center;
+    gap:10px;
+    flex-wrap:wrap;
+    z-index:2;
+  }
+  h1{
+    font-size:18px;
+    margin:0 8px 0 0;
+    white-space:nowrap;
+  }
+  .group{
+    display:flex;
+    align-items:center;
+    gap:6px;
+  }
+  button,label{
+    border:1px solid var(--border);
+    background:#fff;
+    border-radius:10px;
+    padding:9px 12px;
+    font-size:14px;
+    cursor:pointer;
+    user-select:none;
+  }
+  button.active{
+    background:var(--accent);
+    color:#fff;
+    border-color:var(--accent);
+  }
+  button:active{transform:translateY(1px)}
+  input[type="range"]{width:120px}
+  .stage-wrap{
+    position:relative;
+    min-height:0;
+    padding:14px;
+  }
+  .stage{
+    width:100%;
+    height:100%;
+    border-radius:16px;
+    overflow:hidden;
+    box-shadow:0 6px 24px rgba(0,0,0,.12);
+    background:#fff;
+    position:relative;
+    touch-action:none;
+  }
+  canvas{
+    position:absolute;
+    inset:0;
+    width:100%;
+    height:100%;
+    touch-action:none;
+  }
+  .hint{
+    position:absolute;
+    left:50%;
+    top:50%;
+    transform:translate(-50%,-50%);
+    color:rgba(255,255,255,.68);
+    font-weight:700;
+    letter-spacing:.08em;
+    pointer-events:none;
+    text-align:center;
+    text-shadow:0 1px 3px rgba(0,0,0,.5);
+  }
+  .small{
+    font-size:12px;
+    opacity:.75;
+    font-weight:500;
+    margin-top:6px;
+  }
+  @media(max-width:720px){
+    header{padding:8px}
+    h1{width:100%;font-size:16px}
+    button,label{padding:8px 10px}
+    .stage-wrap{padding:8px}
+    input[type="range"]{width:90px}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>デジタルスクラッチボード</h1>
+
+    <div class="group">
+      <button id="penBtn" class="active">けずる</button>
+      <button id="eraserBtn">もどす</button>
+    </div>
+
+    <div class="group">
+      <label>太さ
+        <input id="size" type="range" min="5" max="80" value="28">
+      </label>
+    </div>
+
+    <div class="group">
+      <label>下地
+        <input id="bgColor" type="color" value="#f6c945">
+      </label>
+      <label>表面
+        <input id="topColor" type="color" value="#111111">
+      </label>
+    </div>
+
+    <div class="group">
+      <button id="undoBtn">一つ戻す</button>
+      <button id="resetBtn">全消去</button>
+      <button id="saveBtn">画像保存</button>
+    </div>
+  </header>
+
+  <main class="stage-wrap">
+    <div class="stage" id="stage">
+      <canvas id="base"></canvas>
+      <canvas id="cover"></canvas>
+      <div class="hint" id="hint">
+        指やマウスで表面をけずってください
+        <div class="small">「もどす」で黒い表面を描き戻せます</div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+(() => {
+  const base = document.getElementById('base');
+  const cover = document.getElementById('cover');
+  const stage = document.getElementById('stage');
+  const bctx = base.getContext('2d');
+  const cctx = cover.getContext('2d');
+
+  const penBtn = document.getElementById('penBtn');
+  const eraserBtn = document.getElementById('eraserBtn');
+  const sizeInput = document.getElementById('size');
+  const bgColor = document.getElementById('bgColor');
+  const topColor = document.getElementById('topColor');
+  const resetBtn = document.getElementById('resetBtn');
+  const undoBtn = document.getElementById('undoBtn');
+  const saveBtn = document.getElementById('saveBtn');
+  const hint = document.getElementById('hint');
+
+  let mode = 'scratch';
+  let drawing = false;
+  let last = null;
+  let history = [];
+
+  function resizeCanvas() {
+    const rect = stage.getBoundingClientRect();
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+
+    const oldCover = document.createElement('canvas');
+    oldCover.width = cover.width;
+    oldCover.height = cover.height;
+    oldCover.getContext('2d').drawImage(cover,0,0);
+
+    base.width = Math.round(rect.width * dpr);
+    base.height = Math.round(rect.height * dpr);
+    cover.width = Math.round(rect.width * dpr);
+    cover.height = Math.round(rect.height * dpr);
+
+    base.style.width = cover.style.width = rect.width + 'px';
+    base.style.height = cover.style.height = rect.height + 'px';
+
+    bctx.setTransform(dpr,0,0,dpr,0,0);
+    cctx.setTransform(dpr,0,0,dpr,0,0);
+
+    drawBase(rect.width, rect.height);
+
+    if (oldCover.width && oldCover.height) {
+      cctx.save();
+      cctx.setTransform(1,0,0,1,0,0);
+      cctx.drawImage(oldCover,0,0,cover.width,cover.height);
+      cctx.restore();
+    } else {
+      resetCover();
+    }
+  }
+
+  function drawBase(w,h){
+    bctx.clearRect(0,0,w,h);
+    bctx.fillStyle = bgColor.value;
+    bctx.fillRect(0,0,w,h);
+
+    // 控えめなガイド模様
+    bctx.save();
+    bctx.globalAlpha = 0.18;
+    bctx.strokeStyle = '#ffffff';
+    bctx.lineWidth = 2;
+    const gap = 42;
+    for(let x=-h; x<w+h; x+=gap){
+      bctx.beginPath();
+      bctx.moveTo(x,0);
+      bctx.lineTo(x-h,h);
+      bctx.stroke();
+    }
+    bctx.restore();
+  }
+
+  function resetCover(){
+    const rect = stage.getBoundingClientRect();
+    cctx.globalCompositeOperation = 'source-over';
+    cctx.clearRect(0,0,rect.width,rect.height);
+    cctx.fillStyle = topColor.value;
+    cctx.fillRect(0,0,rect.width,rect.height);
+    history = [];
+    saveHistory();
+    hint.style.display = 'block';
+  }
+
+  function saveHistory(){
+    if(history.length >= 20) history.shift();
+    history.push(cover.toDataURL());
+  }
+
+  function restoreLast(){
+    if(history.length <= 1) return;
+    history.pop();
+    const img = new Image();
+    img.onload = () => {
+      const rect = stage.getBoundingClientRect();
+      cctx.save();
+      cctx.setTransform(1,0,0,1,0,0);
+      cctx.clearRect(0,0,cover.width,cover.height);
+      cctx.drawImage(img,0,0,cover.width,cover.height);
+      cctx.restore();
+    };
+    img.src = history[history.length - 1];
+  }
+
+  function pointFromEvent(e){
+    const rect = cover.getBoundingClientRect();
+    return {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top
+    };
+  }
+
+  function begin(e){
+    drawing = true;
+    last = pointFromEvent(e);
+    drawDot(last);
+    cover.setPointerCapture?.(e.pointerId);
+    hint.style.display = 'none';
+  }
+
+  function move(e){
+    if(!drawing) return;
+    const p = pointFromEvent(e);
+    drawLine(last,p);
+    last = p;
+  }
+
+  function end(e){
+    if(!drawing) return;
+    drawing = false;
+    last = null;
+    saveHistory();
+    cover.releasePointerCapture?.(e.pointerId);
+  }
+
+  function setupBrush(){
+    cctx.lineWidth = Number(sizeInput.value);
+    cctx.lineCap = 'round';
+    cctx.lineJoin = 'round';
+    if(mode === 'scratch'){
+      cctx.globalCompositeOperation = 'destination-out';
+      cctx.strokeStyle = 'rgba(0,0,0,1)';
+      cctx.fillStyle = 'rgba(0,0,0,1)';
+    }else{
+      cctx.globalCompositeOperation = 'source-over';
+      cctx.strokeStyle = topColor.value;
+      cctx.fillStyle = topColor.value;
+    }
+  }
+
+  function drawDot(p){
+    setupBrush();
+    cctx.beginPath();
+    cctx.arc(p.x,p.y,Number(sizeInput.value)/2,0,Math.PI*2);
+    cctx.fill();
+  }
+
+  function drawLine(a,b){
+    setupBrush();
+    cctx.beginPath();
+    cctx.moveTo(a.x,a.y);
+    cctx.lineTo(b.x,b.y);
+    cctx.stroke();
+  }
+
+  penBtn.addEventListener('click', () => {
+    mode = 'scratch';
+    penBtn.classList.add('active');
+    eraserBtn.classList.remove('active');
+  });
+
+  eraserBtn.addEventListener('click', () => {
+    mode = 'restore';
+    eraserBtn.classList.add('active');
+    penBtn.classList.remove('active');
+  });
+
+  bgColor.addEventListener('input', () => {
+    const rect = stage.getBoundingClientRect();
+    drawBase(rect.width,rect.height);
+  });
+
+  topColor.addEventListener('input', () => {
+    if(mode === 'restore') setupBrush();
+  });
+
+  resetBtn.addEventListener('click', resetCover);
+  undoBtn.addEventListener('click', restoreLast);
+
+  saveBtn.addEventListener('click', () => {
+    const out = document.createElement('canvas');
+    out.width = base.width;
+    out.height = base.height;
+    const o = out.getContext('2d');
+    o.drawImage(base,0,0);
+    o.drawImage(cover,0,0);
+    const a = document.createElement('a');
+    a.download = 'digital-scratch-board.png';
+    a.href = out.toDataURL('image/png');
+    a.click();
+  });
+
+  cover.addEventListener('pointerdown', begin);
+  cover.addEventListener('pointermove', move);
+  cover.addEventListener('pointerup', end);
+  cover.addEventListener('pointercancel', end);
+  cover.addEventListener('pointerleave', e => { if(e.buttons===0) end(e); });
+
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
+})();
+</script>
+</body>
+</html>
